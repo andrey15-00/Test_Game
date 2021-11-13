@@ -2,7 +2,7 @@
 
 namespace UnityGame
 {
-    public class GameData : IDatabaseData
+    public class GameData : IData
     {
         [NonSerialized] private int _score;
 
@@ -12,11 +12,16 @@ namespace UnityGame
             set
             {
                 _score = value;
-                ScoreChanged?.Invoke(_score);
+                Changed?.Invoke();
             }
         }
 
-        public event Action<int> ScoreChanged;
+        public event Action Changed;
+
+        public IData Clone()
+        {
+            return (GameData)MemberwiseClone();
+        }
 
         public void Reset()
         {

@@ -12,9 +12,12 @@ namespace UnityGame
     /// <summary>
     /// Implement this interface to be abble to use SetData/GetData/HaveData methods.
     /// </summary>
-    public interface IDatabaseData
+    public interface IData
     {
+        public event Action Changed;
+
         public abstract void Reset();
+        public abstract IData Clone();
     }
 
     /// <summary>
@@ -32,12 +35,107 @@ namespace UnityGame
     {
         private string _dataPath;
         private DatabaseData _data;
+        private Dictionary<Type, Action<IData>> _dataChangedSubscribers = new Dictionary<Type, Action<IData>>();
+        private Dictionary<string, Action> _internalDataChangedSubscribers = new Dictionary<string, Action>();
 
         public override void Init()
         {
             _dataPath = string.Format("{0}/{1}/Data/GameData.json",
                 Application.persistentDataPath, Application.identifier);
             LoadDataFromFile();
+
+            foreach (var pair in _data.Data)
+            {
+                TrySubscribeToDataInternal(pair.Key, pair.Value);
+            }
+        }
+
+        /// <summary>
+        /// Add/Change some data in database.
+        /// </summary>
+        public void ChangeOrAddData<T>(T data) where T : IData
+        {
+            if (data == null)
+                throw new Exception("data is null!");
+
+            Type type = data.GetType();
+            string key = type.ToString();
+
+            IData oldData;
+            if (_data.Data.TryGetValue(key, out oldData))
+            {
+                if(!((T)oldData).Equals(data))
+                {
+                    Action oldListeners = _internalDataChangedSubscribers[key];
+                    oldData.Changed -= oldListeners;
+                    data.Changed += oldListeners;
+                    PublishDataChanged(data);
+                }
+
+                _data.Data[key] = data;
+            }
+            else
+            {
+                _data.Data.Add(key, data);
+                TrySubscribeToDataInternal(data);
+            }
+
+            _data.Version += 1;
+        }
+
+        /// <summary>
+        /// Get data from database.
+        /// </summary>
+        public T GetData<T>() where T : IData
+        {
+            string key = typeof(T).ToString();
+
+            if (HaveData<T>())
+            {
+                return (T)_data.Data[key];
+            }
+
+            var objectType = typeof(T);
+            var newData = Activator.CreateInstance(objectType);
+            _data.Data[key] = (T)newData;
+            return (T)newData;
+        }
+
+        /// <summary>
+        /// Subscribe to data changed of given data type.
+        /// </summary>
+        public void SubscribeDataChanged<T>(Action<T> callback) where T : IData
+        {
+            Type key = typeof(T);
+
+            Action<IData> changed = (data) =>
+            {
+                callback.Invoke((T)data);
+            };
+
+            if (_dataChangedSubscribers.ContainsKey(key))
+            {
+                _dataChangedSubscribers[key] += changed;
+            }
+            else
+            {
+                _dataChangedSubscribers[key] = changed;
+            }
+        }
+
+        /// <summary>
+        /// Check if data with given key exists.
+        /// </summary>
+        public bool HaveData<T>() where T : IData
+        {
+            string key = typeof(T).ToString();
+
+            if (_data.Data.ContainsKey(key))
+            {
+                return true;
+            }
+
+            return false;
         }
 
         private void OnApplicationQuit()
@@ -58,7 +156,7 @@ namespace UnityGame
         /// </summary>
         private void SaveDataToFile()
         {
-            if(_data == null)
+            if (_data == null)
             {
                 LogWrapper.LogError("[DataController] Data is null!");
                 return;
@@ -91,9 +189,9 @@ namespace UnityGame
                 {
                     string json = reader.ReadToEnd();
                     _data = JsonConvert.DeserializeObject<DatabaseData>(json, GetSerializerSettings());
-                    
+
                     LogWrapper.Log($"[DataController] Loaded data from {_dataPath}; NewData: {false}; Data: {json};");
-                    
+
                     return;
                 }
             }
@@ -103,66 +201,56 @@ namespace UnityGame
             LogWrapper.Log($"[DataController] Loaded data from {_dataPath}; NewData: {true};");
         }
 
-        /// <summary>
-        /// Add/Changed some data in database.
-        /// </summary>
-        public void SetData(IDatabaseData data)
+        private void PublishDataChanged<T>(T data)
         {
-            string key = data.GetType().ToString();
-
-            if (key == null)
-                throw new Exception("key is null!");
-            if (data == null)
-                throw new Exception("data is null!");
-
-            if (_data.Data.ContainsKey(key))
-            {
-                _data.Data[key] = data;
-            }
-            else
-            {
-                _data.Data.Add(key, data);
-            }
-            _data.Version += 1;
+            Type key = typeof(T);
+            PublishDataChanged(key, data);
         }
 
-        /// <summary>
-        /// Get data from database.
-        /// </summary>
-        public T GetData<T>() where T : IDatabaseData
+        private void PublishDataChanged<T>(Type type, T data)
+        {
+            if (_dataChangedSubscribers.ContainsKey(type))
+            {
+                _dataChangedSubscribers[type].Invoke((IData)data);
+            }
+        }
+
+        private bool TrySubscribeToDataInternal<T>(T data) where T : IData
         {
             string key = typeof(T).ToString();
 
-            if (key == null)
-                throw new Exception("key is null!");
-
-            if (HaveData<T>())
+            Action action;
+            if (!_internalDataChangedSubscribers.ContainsKey(key))
             {
-                return (T)_data.Data[key];
-            }
+                Action changed = () =>
+                {
+                    // Send copy of the data to prevent modification.
+                    PublishDataChanged(data.Clone());
+                };
+                data.Changed += changed;
 
+                _internalDataChangedSubscribers.Add(key, changed);
 
-            var objectType = typeof(T);
-            var newData = Activator.CreateInstance(objectType);
-            _data.Data[key] = (T)newData;
-            return (T)newData;
-        }
-
-        /// <summary>
-        /// Check if data with given key exists.
-        /// </summary>
-        public bool HaveData<T>() where T : IDatabaseData
-        {
-            string key = typeof(T).ToString();
-
-            if (key == null)
-                throw new Exception("key is null!");
-
-            if (_data.Data.ContainsKey(key))
-            {
                 return true;
             }
+            return false;
+        }
 
+        private bool TrySubscribeToDataInternal(string typeName, IData data)
+        {
+            Type type = Type.GetType(typeName);
+            if (!_internalDataChangedSubscribers.ContainsKey(typeName))
+            {
+                Action changed = () =>
+                {
+                    // Send copy of the data to prevent modification.
+                    PublishDataChanged(type, data.Clone());
+                };
+                data.Changed += changed;
+
+                _internalDataChangedSubscribers.Add(typeName, changed);
+                return true;
+            }
             return false;
         }
 
@@ -181,7 +269,7 @@ namespace UnityGame
         private class DatabaseData
         {
             public int Version;
-            public Dictionary<string, IDatabaseData> Data = new Dictionary<string, IDatabaseData>();
+            public Dictionary<string, IData> Data = new Dictionary<string, IData>();
         }
 
         private class GetOnlyContractResolver : DefaultContractResolver

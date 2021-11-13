@@ -25,7 +25,7 @@ namespace UnityGame
             _exit.onClick.AddListener(OnExitClicked);
 
             _gameData = _dataController.Value.GetData<GameData>();
-            _gameData.ScoreChanged += OnScoreChanged;
+            _dataController.Value.SubscribeDataChanged<GameData>(OnDataChanged);
 
             _initialized = true;
         }
@@ -48,9 +48,11 @@ namespace UnityGame
             _uiController.Value.GetScreen<UIHomeScreen>().Show();
         }
 
-        private void OnScoreChanged(int currentScore)
+        private void OnDataChanged(GameData data)
         {
-            _score.text = currentScore.ToString();
+            _score.text = data.Score.ToString();
+
+            data.Score += 10;
         }
     }
 }
